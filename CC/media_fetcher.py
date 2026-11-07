@@ -1,34 +1,35 @@
 import requests
 import random
-import config
+import os
+
+PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY", "")
 
 def fetch_pexels_video(query, output_file="output/background.mp4"):
-    url = f"[https://api.pexels.com/videos/search?query=](https://api.pexels.com/videos/search?query=){query}&per_page=15&orientation=portrait"
-    headers = {"Authorization": config.PEXELS_API_KEY}
+    """Downloads a vertical HD stock video from Pixabay API based on keyword query."""
+    url = f"https://pixabay.com/api/videos/?key={PIXABAY_API_KEY}&q={query}&video_type=film&per_page=15"
     
-    response = requests.get(url, headers=headers)
+    response = requests.get(url)
     if response.status_code != 200:
         return fetch_pexels_video("nature", output_file)
         
     data = response.json()
-    videos = data.get("videos", [])
+    hits = data.get("hits", [])
     
-    if not videos:
-        return fetch_pexels_video("dark space", output_file)
+    if not hits:
+        return fetch_pexels_video("galaxy", output_file)
         
-    selected_video = random.choice(videos)
-    video_files = selected_video.get("video_files", [])
+    selected = random.choice(hits)
+    videos = selected.get("videos", {})
     
-    download_url = None
-    for file in video_files:
-        if file.get("height", 0) > file.get("width", 0):
-            download_url = file["link"]
-            break
-            
-    if not download_url and video_files:
-        download_url = video_files[0]["link"]
+    # Pilih resolusi video HD/Medium
+    video_info = videos.get("large") or videos.get("medium") or videos.get("small")
+    if not video_info or "url" not in video_info:
+        return fetch_pexels_video("nature", output_file)
         
+    download_url = video_info["url"]
+    
     video_data = requests.get(download_url).content
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
     with open(output_file, "wb") as f:
         f.write(video_data)
         
