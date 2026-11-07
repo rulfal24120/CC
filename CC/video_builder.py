@@ -6,17 +6,14 @@ import config
 
 def create_subtitle_image(text, width=960, font_size=55, color="yellow", stroke_color="black", stroke_width=4):
     """Membuat gambar subtitle transparan menggunakan PIL tanpa butuh ImageMagick."""
-    # Gunakan font bawaan Ubuntu
     try:
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
     except Exception:
         font = ImageFont.load_default()
 
-    # Buat kanvas sementara untuk menghitung ukuran teks
     dummy_img = Image.new("RGBA", (1, 1))
     draw = ImageDraw.Draw(dummy_img)
     
-    # Bungkus teks jika terlalu panjang
     words = text.split()
     lines = []
     current_line = []
@@ -34,18 +31,20 @@ def create_subtitle_image(text, width=960, font_size=55, color="yellow", stroke_
         
     wrapped_text = '\n'.join(lines)
     
-    # Hitung ukuran total teks
     bbox = draw.multiline_textbbox((0, 0), wrapped_text, font=font, align="center")
-    text_w = bbox[2] - bbox[0] + (stroke_width * 4)
-    text_h = bbox[3] - bbox[1] + (stroke_width * 4)
+    text_w = int(bbox[2] - bbox[0] + (stroke_width * 4))
+    text_h = int(bbox[3] - bbox[1] + (stroke_width * 4))
     
-    # Buat gambar RGBA transparan
+    # Pastikan ukuran piksel minimal 1x1 piksel (integer)
+    text_w = max(1, text_w)
+    text_h = max(1, text_h)
+    
     img = Image.new("RGBA", (text_w, text_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     
-    # Gambar teks dengan stroke hitam tebal
+    # Koordinat pusat dipastikan integer
     draw.multiline_text(
-        (text_w / 2, text_h / 2),
+        (text_w // 2, text_h // 2),
         wrapped_text,
         font=font,
         fill=color,
@@ -78,7 +77,6 @@ def build_final_video(bg_video_path, voice_audio_path, narration_text, output_pa
         height=config.VIDEO_HEIGHT
     ).set_audio(audio_clip)
     
-    # Text Overlay Subtitle (Kuning Tebal Shadow via PIL)
     words = narration_text.split()
     chunk_size = 5
     text_chunks = [' '.join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
