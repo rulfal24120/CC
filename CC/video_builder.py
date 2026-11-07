@@ -1,10 +1,61 @@
-import PIL.Image
-# Fix Patch compatibility for MoviePy & Pillow >= 10
-if not hasattr(PIL.Image, 'ANTIALIAS'):
-    PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
-
-from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip
+import os
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+from moviepy.editor import VideoFileClip, AudioFileClip, ImageClip, CompositeVideoClip
 import config
+
+def create_subtitle_image(text, width=960, font_size=55, color="yellow", stroke_color="black", stroke_width=4):
+    """Membuat gambar subtitle transparan menggunakan PIL tanpa butuh ImageMagick."""
+    # Gunakan font bawaan Ubuntu
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+    except Exception:
+        font = ImageFont.load_default()
+
+    # Buat kanvas sementara untuk menghitung ukuran teks
+    dummy_img = Image.new("RGBA", (1, 1))
+    draw = ImageDraw.Draw(dummy_img)
+    
+    # Bungkus teks jika terlalu panjang
+    words = text.split()
+    lines = []
+    current_line = []
+    
+    for word in words:
+        test_line = ' '.join(current_line + [word])
+        bbox = draw.textbbox((0, 0), test_line, font=font)
+        if bbox[2] - bbox[0] <= width:
+            current_line.append(word)
+        else:
+            lines.append(' '.join(current_line))
+            current_line = [word]
+    if current_line:
+        lines.append(' '.join(current_line))
+        
+    wrapped_text = '\n'.join(lines)
+    
+    # Hitung ukuran total teks
+    bbox = draw.multiline_textbbox((0, 0), wrapped_text, font=font, align="center")
+    text_w = bbox[2] - bbox[0] + (stroke_width * 4)
+    text_h = bbox[3] - bbox[1] + (stroke_width * 4)
+    
+    # Buat gambar RGBA transparan
+    img = Image.new("RGBA", (text_w, text_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    
+    # Gambar teks dengan stroke hitam tebal
+    draw.multiline_text(
+        (text_w / 2, text_h / 2),
+        wrapped_text,
+        font=font,
+        fill=color,
+        anchor="mm",
+        align="center",
+        stroke_width=stroke_width,
+        stroke_fill=stroke_color
+    )
+    
+    return np.array(img)
 
 def build_final_video(bg_video_path, voice_audio_path, narration_text, output_path="output/final_reels.mp4"):
     audio_clip = AudioFileClip(voice_audio_path)
@@ -16,7 +67,6 @@ def build_final_video(bg_video_path, voice_audio_path, narration_text, output_pa
     else:
         video_clip = video_clip.subclip(0, duration)
         
-    # Menggunakan properti .h dan .w (MoviePy standard)
     video_clip = video_clip.resize(height=config.VIDEO_HEIGHT)
     if video_clip.w < config.VIDEO_WIDTH:
         video_clip = video_clip.resize(width=config.VIDEO_WIDTH)
@@ -28,7 +78,7 @@ def build_final_video(bg_video_path, voice_audio_path, narration_text, output_pa
         height=config.VIDEO_HEIGHT
     ).set_audio(audio_clip)
     
-    # Text Overlay Subtitle (Kuning Tebal Shadow)
+    # Text Overlay Subtitle (Kuning Tebal Shadow via PIL)
     words = narration_text.split()
     chunk_size = 5
     text_chunks = [' '.join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
@@ -38,14 +88,9 @@ def build_final_video(bg_video_path, voice_audio_path, narration_text, output_pa
     
     for idx, chunk in enumerate(text_chunks):
         start_time = idx * chunk_duration
-        txt_clip = (TextClip(chunk, 
-                            fontsize=60, 
-                            color='yellow', 
-                            font='DejaVu-Sans-Bold', 
-                            stroke_color='black', 
-                            stroke_width=4,
-                            method='caption',
-                            size=(config.VIDEO_WIDTH - 120, None))
+        img_np = create_subtitle_image(chunk, width=config.VIDEO_WIDTH - 120)
+        
+        txt_clip = (ImageClip(img_np)
                     .set_position(('center', 'center'))
                     .set_start(start_time)
                     .set_duration(chunk_duration))
