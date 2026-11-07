@@ -16,13 +16,14 @@ def build_final_video(bg_video_path, voice_audio_path, narration_text, output_pa
     else:
         video_clip = video_clip.subclip(0, duration)
         
+    # Menggunakan properti .h dan .w (MoviePy standard)
     video_clip = video_clip.resize(height=config.VIDEO_HEIGHT)
-    if video_clip.width < config.VIDEO_WIDTH:
+    if video_clip.w < config.VIDEO_WIDTH:
         video_clip = video_clip.resize(width=config.VIDEO_WIDTH)
         
     video_clip = video_clip.crop(
-        x_center=video_clip.width / 2,
-        y_center=video_clip.height / 2,
+        x_center=video_clip.w / 2,
+        y_center=video_clip.h / 2,
         width=config.VIDEO_WIDTH,
         height=config.VIDEO_HEIGHT
     ).set_audio(audio_clip)
