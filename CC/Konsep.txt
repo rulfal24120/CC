@@ -1,0 +1,13 @@
+CC/
+├── .github/
+│   └── workflows/
+│       └── auto_post.yml   # Workflow Otomasi GitHub Actions
+├── config.py               # Pengaturan & Pembaca Secrets
+├── script_gen.py           # Generator Naskah Gemini API
+├── voice_gen.py            # Generator Voiceover Edge-TTS
+├── media_fetcher.py       # Pengambil Video Pexels API
+├── video_builder.py        # Rendering Video & Subtitle
+├── meta_publisher.py       # Publisher IG & FB Reels
+├── yt_publisher.py         # Publisher YouTube Shorts
+├── requirements.txt        # Daftar Library Python
+└── main.py                 # Master Orchestrator
