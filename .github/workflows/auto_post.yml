@@ -25,9 +25,6 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y ffmpeg imagemagick
-        # Buka penuh hak akses kebijakan keamanan ImageMagick untuk MoviePy
-        sudo sed -i 's/rights="none" pattern="@\*"/rights="read | write" pattern="@\*"/g' /etc/ImageMagick-6/policy.xml || true
-        sudo sed -i 's/domain="coder" rights="none" pattern="LABEL"/domain="coder" rights="read | write" pattern="LABEL"/g' /etc/ImageMagick-6/policy.xml || true
 
     - name: Install Python Dependencies
       run: |
@@ -36,10 +33,16 @@ jobs:
 
     - name: Run Main Pipeline
       env:
-        IMAGEMAGICK_BINARY: /usr/bin/convert
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         INSTAGRAM_ACCOUNT_ID: ${{ secrets.INSTAGRAM_ACCOUNT_ID }}
         META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
         YT_CLIENT_SECRET_JSON: ${{ secrets.YT_CLIENT_SECRET_JSON }}
       run: python CC/main.py
+
+    # Tambahan: Simpan video agar bisa di-download manual
+    - name: Upload Video Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: generated-reels-video
+        path: output/final_reels.mp4
