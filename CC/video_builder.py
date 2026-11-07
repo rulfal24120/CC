@@ -35,14 +35,12 @@ def create_subtitle_image(text, width=960, font_size=55, color="yellow", stroke_
     text_w = int(bbox[2] - bbox[0] + (stroke_width * 4))
     text_h = int(bbox[3] - bbox[1] + (stroke_width * 4))
     
-    # Pastikan ukuran piksel minimal 1x1 piksel (integer)
     text_w = max(1, text_w)
     text_h = max(1, text_h)
     
     img = Image.new("RGBA", (text_w, text_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     
-    # Koordinat pusat dipastikan integer
     draw.multiline_text(
         (text_w // 2, text_h // 2),
         wrapped_text,
@@ -84,12 +82,15 @@ def build_final_video(bg_video_path, voice_audio_path, narration_text, output_pa
     chunk_duration = duration / len(text_chunks)
     txt_clips = []
     
+    # Menentukan posisi vertikal di 75% dari atas layar (posisi bawah yang ideal)
+    subtitle_y_position = int(config.VIDEO_HEIGHT * 0.75)
+    
     for idx, chunk in enumerate(text_chunks):
         start_time = idx * chunk_duration
         img_np = create_subtitle_image(chunk, width=config.VIDEO_WIDTH - 120)
         
         txt_clip = (ImageClip(img_np)
-                    .set_position(('center', 'center'))
+                    .set_position(('center', subtitle_y_position))
                     .set_start(start_time)
                     .set_duration(chunk_duration))
         txt_clips.append(txt_clip)
