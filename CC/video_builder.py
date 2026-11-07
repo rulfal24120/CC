@@ -1,3 +1,8 @@
+import PIL.Image
+# Fix Patch compatibility for MoviePy & Pillow >= 10
+if not hasattr(PIL.Image, 'ANTIALIAS'):
+    PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
+
 from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip
 import config
 
@@ -35,7 +40,7 @@ def build_final_video(bg_video_path, voice_audio_path, narration_text, output_pa
         txt_clip = (TextClip(chunk, 
                             fontsize=60, 
                             color='yellow', 
-                            font='Arial-Bold', 
+                            font='DejaVu-Sans-Bold', 
                             stroke_color='black', 
                             stroke_width=4,
                             method='caption',
