@@ -6,7 +6,7 @@ on:
     - cron: '0 17 * * *'
     # Jam 07:00 PM EST (00:00 UTC) -> 07:00 WIB
     - cron: '0 0 * * *'
-  workflow_dispatch: # Memungkinkan eksekusi manual dari tombol Run workflow di GitHub UI
+  workflow_dispatch: # Pemicu manual dari GitHub Actions UI
 
 jobs:
   build-and-notify:
@@ -25,7 +25,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg imagemagick
-          # Fix policy ImageMagick (Mendukung ImageMagick versi 6 & 7)
+          # Fix policy ImageMagick (Support versi 6 & 7)
           sudo find /etc/ImageMagick* -name "policy.xml" -exec sed -i 's/policy domain="path" rights="none" pattern="@\*"/policy domain="path" rights="read | write" pattern="@\*"/' {} +
 
       - name: Install Python Dependencies
@@ -34,7 +34,6 @@ jobs:
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           else
-            echo "requirements.txt tidak ditemukan, menginstal pustaka secara otomatis..."
             pip install "google-genai>=0.1.0" "edge-tts>=6.1.9" "pytrends>=4.9.2" "requests>=2.31.0" "moviepy>=1.0.3" "python-telegram-bot>=20.0"
           fi
 
