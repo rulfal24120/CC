@@ -31,7 +31,12 @@ jobs:
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            echo "requirements.txt tidak ditemukan, menginstal pustaka secara otomatis..."
+            pip install "google-genai>=0.1.0" "edge-tts>=6.1.9" "pytrends>=4.9.2" "requests>=2.31.0" "moviepy>=1.0.3" "python-telegram-bot>=20.0"
+          fi
 
       - name: Execute Main Production Script
         env:
