@@ -12,7 +12,7 @@ def compile_video(
     output_path: str
 ) -> str:
     """
-    Menggabungkan video, voiceover, BGM tipis, dan subtitle ke dalam 1 file MP3 final 720p.
+    Menggabungkan video, voiceover, BGM tipis, dan subtitle ke dalam 1 file MP4 final 720p.
     """
     print("[VideoCompiler] Memulai rendering video...")
 
@@ -44,19 +44,22 @@ def compile_video(
     video_clip = video_clip.set_audio(final_audio)
 
     # 4. Generate Subtitle Sederhana di Safe Zone (Tengah Layar)
-    # Memecah naskah menjadi bagian pendek untuk subtitle
-    subtitle_clip = TextClip(
-        script_text, 
-        fontsize=32, 
-        color='yellow', 
-        font='Arial-Bold', 
-        stroke_color='black', 
-        stroke_width=2,
-        method='caption',
-        size=(640, None)
-    ).set_position(('center', 'center')).set_duration(audio_duration)
-
-    final_clip = CompositeVideoClip([video_clip, subtitle_clip])
+    try:
+        subtitle_clip = TextClip(
+            script_text, 
+            fontsize=32, 
+            color='yellow', 
+            font='DejaVu-Sans-Bold', 
+            stroke_color='black', 
+            stroke_width=2,
+            method='caption',
+            size=(640, None)
+        ).set_position(('center', 'center')).set_duration(audio_duration)
+        
+        final_clip = CompositeVideoClip([video_clip, subtitle_clip])
+    except Exception as e:
+        print(f"[VideoCompiler] Subtitle rendering fallback (font standar): {e}")
+        final_clip = video_clip
 
     # 5. Render Video Output (Preset ultrafast untuk efisiensi RAM/CPU)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -69,7 +72,7 @@ def compile_video(
         threads=2
     )
 
-    # Close clips to free memory
+    # Free memory resources
     voice_clip.close()
     video_clip.close()
     final_clip.close()
