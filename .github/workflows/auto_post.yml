@@ -25,8 +25,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg imagemagick
-          # Edit policy.xml di lokasi ImageMagick mana pun yang terpasang (versi 6 atau 7)
-          sudo sed -i 's/policy domain="path" rights="none" pattern="@\*"/policy domain="path" rights="read | write" pattern="@\*"/' /etc/ImageMagick-*/policy.xml
+          # Fix policy ImageMagick (Mendukung ImageMagick versi 6 & 7)
+          sudo find /etc/ImageMagick* -name "policy.xml" -exec sed -i 's/policy domain="path" rights="none" pattern="@\*"/policy domain="path" rights="read | write" pattern="@\*"/' {} +
+
+      - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
