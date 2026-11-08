@@ -1,49 +1,64 @@
 import os
-import json
-import config
-from script_gen import generate_script
-from voice_gen import generate_voiceover
-from media_fetcher import fetch_pexels_video
-from video_builder import build_final_video
+import shutil
+from trend_finder import get_trending_topic
+from script_generator import generate_script_and_metadata
+from audio_generator import generate_audio
+from visual_fetcher import fetch_background_video
+from video_compiler import compile_video
+from telegram_notifier import send_telegram_notification
 
-def run_pipeline():
-    print("=== STARTING AUTOMATED CONTENT PIPELINE ===")
+def cleanup_previous_production():
+    """
+    Sesuai strategi: Menghapus folder temp & output lama tepat SEBELUM produksi baru dimulai.
+    """
+    dirs_to_clean = ["assets_temp", "output"]
+    for d in dirs_to_clean:
+        if os.path.exists(d):
+            shutil.rmtree(d)
+            print(f"[Orchestrator] Membersihkan direktori lama: {d}")
+        os.makedirs(d, exist_ok=True)
+
+def main():
+    print("==================================================")
+    print("      MEMULAI PRODUKSI PABRIK KONTEN REELS       ")
+    print("==================================================")
+
+    # Step 0: Pembersihan produksi sebelumnya
+    cleanup_previous_production()
+
+    # Path standar
+    temp_dir = "assets_temp"
+    output_dir = "output"
     
-    # 1. Generate Script, Title, Caption & Hashtags via script_gen.py
-    print("[1/5] Generating Script, Caption & Hashtags via Gemini...")
-    script_data = generate_script()
-    print(f"Topic Keyword: {script_data.get('topic_query')}")
-    print(f"Title: {script_data.get('title')}")
-    
-    # Simpan Metadata (Caption + Hashtags) ke file teks di folder output baku
-    metadata_path = os.path.join(config.OUTPUT_DIR, "metadata.txt")
-    with open(metadata_path, "w", encoding="utf-8") as f:
-        f.write(f"JUDUL:\n{script_data.get('title')}\n\n")
-        f.write(f"CAPTION:\n{script_data.get('caption')}\n\n")
-        f.write(f"HASHTAGS:\n{script_data.get('hashtags')}\n")
-        
-    json_path = os.path.join(config.OUTPUT_DIR, "metadata.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(script_data, f, ensure_ascii=False, indent=2)
-    
-    # 2. Generate Voiceover Audio via voice_gen.py
-    print("[2/5] Generating Voiceover...")
-    voice_path = os.path.join(config.OUTPUT_DIR, "voiceover.mp3")
-    generate_voiceover(script_data['narration'], voice_path)
-    
-    # 3. Fetch Background Video via media_fetcher.py
-    print("[3/5] Fetching Background Video...")
-    bg_path = os.path.join(config.OUTPUT_DIR, "background.mp4")
-    fetch_pexels_video(script_data.get('topic_query', 'nature'), bg_path)
-    
-    # 4. Build Final Video via video_builder.py (Subtitle di Bawah)
-    print("[4/5] Building Final Video...")
-    final_video = os.path.join(config.OUTPUT_DIR, "final_reels.mp4")
-    build_final_video(bg_path, voice_path, script_data['narration'], final_video)
-    
-    print("[5/5] Content Artifacts Ready in Output Folder!")
-    print("=== PIPELINE EXECUTION COMPLETED SUCCESSFULLY ===")
+    audio_path = os.path.join(temp_dir, "voice.mp3")
+    bg_video_path = os.path.join(temp_dir, "background.mp4")
+    bgm_path = os.path.join("assets", "bgm.mp3")
+    final_video_path = os.path.join(output_dir, "final_reels.mp4")
+
+    # Step 1: Riset Tren USA
+    topic = get_trending_topic()
+
+    # Step 2: Generate Skrip & Metadata via Gemini API
+    script_data = generate_script_and_metadata(topic)
+    script_text = script_data.get("script_text", "")
+    pixabay_query = script_data.get("pixabay_search_query", "cinematic nature")
+    metadata = script_data.get("metadata", {})
+
+    # Step 3: Generate Audio (Edge-TTS en-US)
+    generate_audio(script_text, audio_path)
+
+    # Step 4: Fetch Visual Video (Pixabay API)
+    fetch_background_video(pixabay_query, bg_video_path)
+
+    # Step 5: Render Video Final (FFmpeg / MoviePy)
+    compile_video(bg_video_path, audio_path, bgm_path, script_text, final_video_path)
+
+    # Step 6: Kirim Notifikasi & Video ke Telegram (Opsi A)
+    send_telegram_notification(final_video_path, metadata)
+
+    print("==================================================")
+    print("     PRODUKSI SELESAI & VIDEO SIAP DIUNGGAH       ")
+    print("==================================================")
 
 if __name__ == "__main__":
-    run_pipeline()
-    
+    main()
