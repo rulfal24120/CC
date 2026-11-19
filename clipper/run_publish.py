@@ -1,4 +1,8 @@
-"""Publish due clips (2/hari, 2 slot)."""
+"""Publish due clips (2/hari, 2 slot). Tidak dipakai di trial.
+
+Aktifkan hanya setelah storage persisten (R2/S3) siap — lihat catatan di workflow.
+"""
+
 from __future__ import annotations
 
 import json
@@ -27,15 +31,23 @@ def main() -> None:
                 "status": "published",
                 "date": common.today_iso(),
             })
-            clip_notify.publish_result(clip, result)
+            clip_notify.send_text(
+                f"<b>Published</b> <code>{clip['clip_id']}</code>\n"
+                f"YouTube: {result['youtube_url'] or '-'}\n"
+                f"Facebook: {result['facebook_url'] or '-'}"
+            )
             published.append(result)
         except SystemExit:
             raise
         except Exception as exc:  # noqa: BLE001
             reason = f"{type(exc).__name__}: {exc}"
-            common.error("publish_clip_failed", clip_id=clip["clip_id"], err=reason)
+            common.error("publish_clip_failed", clip_id=clip["clip_id"],
+                         err=reason)
             state.mark_failed(clip["clip_id"], reason)
-            clip_notify.publish_failed(clip, reason)
+            clip_notify.send_text(
+                f"<b>Gagal publish</b> <code>{clip['clip_id']}</code>\n"
+                f"{reason[:600]}"
+            )
     print(json.dumps({"published": len(published)}, indent=2))
 
 
