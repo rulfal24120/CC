@@ -48,7 +48,6 @@ jobs:
           pip install --index-url https://download.pytorch.org/whl/cpu \
             torch==2.4.1+cpu torchvision==0.19.1+cpu
 
-      # --- PERBAIKAN: pin setuptools <80 agar pkg_resources tersedia ---
       - name: Pin setuptools for pkg_resources
         run: |
           pip install "setuptools>=71,<79" wheel
@@ -56,7 +55,6 @@ jobs:
       - name: Install whisper (no-deps, no-build-isolation)
         run: |
           pip install --no-deps --no-build-isolation openai-whisper==20240930
-      # ------------------------------------------------------------------
 
       - name: Install deps
         run: pip install -r requirements_clips.txt
@@ -75,6 +73,17 @@ jobs:
               https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-Bold.ttf
           fi
 
+      - name: Prepare YouTube cookies
+        env:
+          COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
+        run: |
+          if [ -n "$COOKIES_B64" ]; then
+            echo "$COOKIES_B64" | base64 -d > cookies.txt
+            echo "cookies.txt siap ($(wc -l < cookies.txt) baris)"
+          else
+            echo "Secret YOUTUBE_COOKIES_B64 kosong; yt-dlp mungkin kena bot-check"
+          fi
+
       - name: Sanity check
         run: python -m py_compile clipper/*.py
 
@@ -85,6 +94,7 @@ jobs:
           GEMINI_CLIP_MODEL: ${{ vars.GEMINI_CLIP_MODEL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          YTDLP_COOKIES_FILE: cookies.txt
           GH_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           TARGET_CLIPS: "5"
           MIN_CLIP_SCORE: "7.0"
