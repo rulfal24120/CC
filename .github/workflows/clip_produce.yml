@@ -90,9 +90,6 @@ jobs:
           curl -fsSL https://deno.land/install.sh | sh
           echo "$HOME/.deno/bin" >> "$GITHUB_PATH"
 
-      # ---------------------------------------------------------------
-      # PO Token Provider (bgutil-ytdlp-pot-provider) sebagai sidecar
-      # ---------------------------------------------------------------
       - name: Start PO Token Provider (Docker sidecar)
         run: |
           docker run --name bgutil-provider -d --init \
@@ -121,12 +118,15 @@ jobs:
           echo "=== recent logs ==="
           docker logs --tail 50 bgutil-provider || true
 
-      - name: Verify yt-dlp + plugin
+      - name: Verify yt-dlp + plugin (correct way)
         run: |
           export PATH="$HOME/.deno/bin:$PATH"
+          echo "=== yt-dlp version ==="
           yt-dlp --version
-          yt-dlp --list-extractor-args youtube || true
-          python -c "import bgutil_ytdlp_pot_provider; print('PO token plugin OK')"
+          echo "=== plugin modules (cek yt_dlp_plugins) ==="
+          python -c "import yt_dlp_plugins; print('yt_dlp_plugins:', yt_dlp_plugins.__file__)"
+          echo "=== verbose extractor info (harus ada [pot] PO Token Providers) ==="
+          yt-dlp -v --simulate "https://www.youtube.com/watch?v=BaW_jenozKc" 2>&1 | grep -E "\[pot\]|PO Token|bgutil" || echo "Tidak ada baris [pot] di output; plugin mungkin belum ter-load"
 
       - name: Sanity check
         run: python -m py_compile clipper/*.py
@@ -139,7 +139,6 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           YTDLP_COOKIES_FILE: cookies.txt
-          POT_PROVIDER_URL: http://127.0.0.1:4416
           GH_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           TARGET_CLIPS: "5"
           MIN_CLIP_SCORE: "7.0"
