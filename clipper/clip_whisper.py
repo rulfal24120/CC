@@ -1,7 +1,16 @@
-"""Transkripsi word-level audio video sumber dengan Whisper small.
+"""Transkripsi word-level audio video sumber dengan faster-whisper INT8.
 
 Input : build_clips/source/video.mp4
 Output: build_clips/transcript.json
+
+Perbaikan kecepatan vs openai-whisper:
+- Engine: faster-whisper (CTranslate2) menggantikan openai-whisper (PyTorch).
+  Di CPU, INT8 ~4-7x lebih cepat untuk akurasi setara.
+- vad_filter=True: lewati segmen hening, hemat 5-15%.
+- beam_size=3: sedikit lebih cepat dari default 5, kualitas hampir sama.
+- Model Systran/faster-whisper-small (~150 MB) vs openai 461 MB.
+
+Output tetap kompatibel: {"language", "duration", "words": [{start, end, text}]}.
 """
 
 from __future__ import annotations
@@ -13,6 +22,9 @@ from . import common
 
 SRC_AUDIO = Path("build_clips/source/audio.wav")
 TRANSCRIPT = Path("build_clips/transcript.json")
+MODEL_SIZE = "small"
+COMPUTE_TYPE = "int8"
+BEAM_SIZE = 3
 
 
 def _extract_audio(video_path: Path) -> Path:
@@ -28,6 +40,19 @@ def _extract_audio(video_path: Path) -> Path:
     return SRC_AUDIO
 
 
+def _load_model():
+    try:
+        from faster_whisper import WhisperModel  # noqa: PLC0415
+    except ImportError as exc:
+        common.fail(
+            f"faster-whisper tidak terpasang: {exc}. "
+            "Tambahkan `faster-whisper>=1.0.3` ke requirements_clips.txt"
+        )
+    common.info("whisper_load", engine="faster-whisper",
+                model=MODEL_SIZE, compute_type=COMPUTE_TYPE)
+    return WhisperModel(MODEL_SIZE, device="cpu", compute_type=COMPUTE_TYPE)
+
+
 def transcribe(video_path: str | Path) -> dict:
     video_path = Path(video_path)
     if not video_path.is_file():
@@ -39,37 +64,45 @@ def transcribe(video_path: str | Path) -> dict:
             return cached
 
     audio_path = _extract_audio(video_path)
-    common.info("whisper_load", model="small")
-    try:
-        import whisper  # noqa: PLC0415
-    except ImportError as exc:
-        common.fail(f"openai-whisper tidak terpasang: {exc}")
+    model = _load_model()
 
-    model = whisper.load_model("small")
-    common.info("whisper_transcribe_start", audio=str(audio_path))
-    result = model.transcribe(
-        str(audio_path), language="id", word_timestamps=True, verbose=False,
+    common.info("whisper_transcribe_start", audio=str(audio_path),
+                beam=BEAM_SIZE, vad=True)
+    segments, info_obj = model.transcribe(
+        str(audio_path),
+        language="id",
+        beam_size=BEAM_SIZE,
+        vad_filter=True,
+        word_timestamps=True,
+        condition_on_previous_text=False,
     )
-    words = []
-    for seg in result.get("segments", []):
-        for w in seg.get("words", []) or []:
-            text = (w.get("word") or "").strip()
+
+    words: list[dict] = []
+    last_end = 0.0
+    for seg in segments:
+        for w in (seg.words or []):
+            text = (w.word or "").strip()
             if not text:
                 continue
-            words.append({
-                "start": float(w["start"]),
-                "end": float(w["end"]),
-                "text": text,
-            })
+            start = float(w.start)
+            end = float(w.end)
+            if end <= start:
+                continue
+            words.append({"start": start, "end": end, "text": text})
+            last_end = end
+
     if not words:
         common.fail("whisper tidak menghasilkan kata apa pun")
+
     payload = {
-        "language": result.get("language", "id"),
-        "duration": float(result.get("duration") or words[-1]["end"]),
+        "language": getattr(info_obj, "language", "id") or "id",
+        "duration": float(getattr(info_obj, "duration", 0.0) or last_end),
         "words": words,
     }
     common.write_json(TRANSCRIPT, payload)
-    common.info("whisper_ok", words=len(words), duration=f"{payload['duration']:.1f}s")
+    common.info("whisper_ok", words=len(words),
+                duration=f"{payload['duration']:.1f}s",
+                engine="faster-whisper")
     return payload
 
 
