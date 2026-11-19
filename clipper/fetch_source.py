@@ -1,30 +1,28 @@
 """Unduh video sumber YouTube via yt-dlp.
 
-Input : SOURCE_URL (env)
+Input : SOURCE_URL (env), opsional YTDLP_COOKIES_FILE
 Output: build_clips/source/video.mp4 + info.json
 Gate  : host YouTube valid, durasi <= MAX_SOURCE_MINUTES, ukuran <= MAX_SOURCE_MB.
+
+Kalau YouTube menolak dengan bot-check, pesan error akan menuntun
+user untuk mengisi secret YOUTUBE_COOKIES_B64 (lihat workflow).
 """
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from urllib.parse import urlparse
 
 from . import common
 
 SRC_DIR = Path("build_clips/source")
-
-# Host YouTube yang diizinkan (bandingkan tanpa prefix www./m.).
 ALLOWED_HOSTS = {"youtube.com", "youtu.be", "youtube-nocookie.com"}
 
 
 def _validate_url(url: str) -> None:
-    """Validasi ringan: host harus YouTube.
-
-    Format path (watch/live/shorts/embed) tidak dicek ketat —
-    yt-dlp yang menangani semuanya.
-    """
+    """Validasi ringan: host harus YouTube. Path bebas (watch/live/shorts/embed)."""
     try:
         parsed = urlparse(url.strip())
     except ValueError:
@@ -40,11 +38,43 @@ def _validate_url(url: str) -> None:
         common.fail(f"source_url bukan host YouTube: {host or url}")
 
 
+def _cookies_arg() -> list[str]:
+    """Kembalikan ['--cookies', path] jika YTDLP_COOKIES_FILE tersedia."""
+    cookie_file = os.getenv("YTDLP_COOKIES_FILE", "").strip()
+    if not cookie_file:
+        return []
+    p = Path(cookie_file)
+    if not p.is_file():
+        common.warn("cookies_file_missing", path=cookie_file)
+        return []
+    common.info("using_cookies", path=str(p))
+    return ["--cookies", str(p)]
+
+
+def _is_bot_check(stderr: str) -> bool:
+    low = (stderr or "").lower()
+    return "sign in to confirm you" in low or "not a bot" in low
+
+
+def _run_ytdlp(args: list[str], label: str, timeout: int) -> common.subprocess.CompletedProcess:
+    """Jalankan yt-dlp tanpa raise. Caller yang memutuskan."""
+    return common.run(args, timeout=timeout, label=label, check=False)
+
+
 def _probe(url: str) -> dict:
-    proc = common.run(
-        ["yt-dlp", "--no-playlist", "--dump-single-json", "--no-warnings", url],
-        timeout=120, label="yt-dlp-meta",
-    )
+    base = ["yt-dlp", "--no-playlist", "--no-warnings", *_cookies_arg()]
+    proc = _run_ytdlp([*base, "--dump-single-json", url],
+                      label="yt-dlp-meta", timeout=120)
+    if proc.returncode != 0:
+        if _is_bot_check(proc.stderr):
+            common.fail(
+                "YouTube menolak akses (bot-check). "
+                "Set secret YOUTUBE_COOKIES_B64 berisi cookies.txt dari browser akun Google throwaway. "
+                "Panduan: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp"
+            )
+        common.fail(
+            f"yt-dlp-meta gagal (exit {proc.returncode}): {(proc.stderr or '')[:300]}"
+        )
     try:
         return json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
@@ -73,17 +103,29 @@ def _download(url: str, out_dir: Path) -> Path:
     common.ensure_dir(out_dir)
     max_mb = common.get_env_int("MAX_SOURCE_MB", 2048)
     max_min = common.get_env_int("MAX_SOURCE_MINUTES", 60)
-    common.run([
+    cmd = [
         "yt-dlp",
         "--no-playlist",
         "--no-warnings",
+        *_cookies_arg(),
         "-f", "bv*[height<=1080]+ba/b[height<=1080]",
         "--merge-output-format", "mp4",
         "--max-filesize", f"{max_mb}M",
         "--match-filter", f"duration < {max_min * 60 + 1}",
         "-o", str(video_path),
         url,
-    ], timeout=1800, label="yt-dlp")
+    ]
+    proc = _run_ytdlp(cmd, label="yt-dlp-download", timeout=1800)
+    if proc.returncode != 0:
+        if _is_bot_check(proc.stderr):
+            common.fail(
+                "YouTube menolak akses saat download (bot-check). "
+                "Pastikan secret YOUTUBE_COOKIES_B64 terisi dan belum kedaluwarsa."
+            )
+        common.fail(
+            f"yt-dlp download gagal (exit {proc.returncode}): "
+            f"{(proc.stderr or '')[:300]}"
+        )
     if not video_path.is_file():
         common.fail("yt-dlp tidak menghasilkan file video")
     return video_path
@@ -102,7 +144,6 @@ def fetch(source_url: str) -> dict:
     common.info("fetch_start", url=source_url)
     meta = _probe(source_url)
 
-    # Live stream yang masih berlangsung / premiere
     if meta.get("is_live"):
         common.fail("sumber masih live; tunggu selesai dan coba lagi")
 
