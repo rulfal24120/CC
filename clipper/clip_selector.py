@@ -3,18 +3,19 @@
 Input : build_clips/transcript.json
 Output: build_clips/selected_clips.json
 
-Perbaikan utama (vs versi sebelumnya):
-1. _build_sentences memakai transcript["segments"] jika tersedia; jika
-   hanya ada "words" dengan tanda baca minim (khas Whisper Indonesia),
-   pecah berdasarkan batas durasi/jumlah kata, bukan hanya tanda baca.
-2. _chunk_long memecah kalimat yang terlalu panjang (> 15 dtk) supaya
-   enumerasi kandidat selalu punya bahan.
-3. _enumerate_with_fallback: kalau rentang env (MIN_CLIP_SEC..MAX_CLIP_SEC)
-   menghasilkan 0 kandidat, longgarkan bertahap sebelum menyerah.
-4. _gemini_score: fallback chain model Gemini 3.x + parser JSON toleran
-   markdown fence.
-5. _select_top: kalau tak ada yang lolos MIN_CLIP_SCORE, ambil top-N
-   terbaik (bisa dimatikan dengan ALLOW_FALLBACK_SELECTION=0).
+Perbaikan:
+1. _build_sentences toleran tanda baca minim; pakai segments jika ada.
+2. _chunk_long memecah kalimat > 15 dtk.
+3. _enumerate_with_fallback: ladder durasi kalau 0 kandidat.
+4. _gemini_score: chain model 3.x + retry antar model + parser JSON toleran.
+   FIX: tidak lagi memakai kwarg `msg` di common.warn (konflik dengan
+   parameter posisional `msg` di signature warn(msg, **fields)).
+5. _select_top: fallback top-N kalau tak ada yang lolos MIN_CLIP_SCORE.
+
+CATATAN: kalau pipeline masih memanggil model lama (mis. gemini-2.5-flash),
+hapus variable GEMINI_CLIP_MODEL di Settings → Variables → Actions, atau
+ubah nilainya ke salah satu model 3.x. Env GEMINI_CLIP_MODEL selalu dipakai
+sebagai prioritas pertama di _gemini_chain().
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import common, state  # noqa: F401  (state dipertahankan untuk kompat)
+from . import common
 
 TRANSCRIPT = Path("build_clips/transcript.json")
 SELECTED = Path("build_clips/selected_clips.json")
@@ -45,6 +46,7 @@ DEFAULT_GEMINI_CHAIN = [
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
 ]
+GEMINI_RETRY_DELAY = 1.0
 
 
 @dataclass
@@ -71,7 +73,6 @@ class Candidate:
 # ---------------------------------------------------------------------------
 
 def _chunk_long(sents: list[Sentence], max_len: float = CHUNK_SEC) -> list[Sentence]:
-    """Pecah kalimat yang lebih panjang dari max_len dtk jadi beberapa bagian."""
     out: list[Sentence] = []
     for s in sents:
         dur = s.end - s.start
@@ -96,7 +97,6 @@ def _chunk_long(sents: list[Sentence], max_len: float = CHUNK_SEC) -> list[Sente
 
 
 def _build_sentences(transcript: dict) -> list[Sentence]:
-    # Prioritas 1: segments (Whisper biasanya beri batas kalimat alami)
     segs = transcript.get("segments") or []
     if isinstance(segs, list) and segs:
         out: list[Sentence] = []
@@ -113,13 +113,11 @@ def _build_sentences(transcript: dict) -> list[Sentence]:
             common.info("sentences_built", source="segments+chunk", count=len(out))
             return out
 
-    # Prioritas 2: words
     words = transcript.get("words") or []
     if not words:
         common.warn("sentences_built", source="none", note="words kosong")
         return []
 
-    # Coba pecah berdasarkan tanda baca
     groups: list[list[dict]] = [[]]
     for w in words:
         groups[-1].append(w)
@@ -141,7 +139,6 @@ def _build_sentences(transcript: dict) -> list[Sentence]:
         common.info("sentences_built", source="words+punct+chunk", count=len(out))
         return out
 
-    # Fallback: tanda baca minim -> pecah per durasi/jumlah kata
     common.warn(
         "sentences_built",
         source="words+duration",
@@ -299,15 +296,20 @@ def _gemini_score(candidates: list[Candidate]) -> None:
     api_key = common.get_env("GEMINI_API_KEY", required=True)
     try:
         import requests  # noqa: PLC0415
+        import time as _time  # noqa: PLC0415
     except ImportError:
-        common.warn("gemini_skip", reason="requests tidak terpasang")
+        common.warn("gemini_skip", note="requests tidak terpasang")
         return
+
     payload = {
         "contents": [{"parts": [{"text": _build_prompt(candidates)}]}],
         "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
     }
-    last_err: Exception | None = None
-    for model in _gemini_chain():
+    chain = _gemini_chain()
+    last_err_type = ""
+    last_err_detail = ""
+
+    for model in chain:
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent?key={api_key}"
@@ -321,25 +323,32 @@ def _gemini_score(candidates: list[Candidate]) -> None:
             parsed = json.loads(_strip_fences(raw))
             scores = {int(s["index"]): s for s in parsed.get("scores", [])}
         except Exception as exc:  # noqa: BLE001
-            last_err = exc
+            last_err_type = type(exc).__name__
+            last_err_detail = str(exc)[:200]
+            # FIX: jangan pakai kwarg 'msg' (konflik dengan parameter posisional).
             common.warn(
                 "gemini_fail",
                 model=model,
-                err=type(exc).__name__,
-                msg=str(exc)[:200],
+                err=last_err_type,
+                detail=last_err_detail,
             )
+            _time.sleep(GEMINI_RETRY_DELAY)
             continue
+
         for idx, s in scores.items():
             if 0 <= idx < len(candidates):
                 candidates[idx].llm = float(s.get("score", 0))
                 candidates[idx].reason = str(s.get("reason", ""))[:200]
         common.info("gemini_ok", model=model, scored=len(scores))
         return
+
+    # FIX: pakai kwarg 'detail' dan 'err_type', bukan 'msg' atau 'last_err'.
     common.warn(
         "gemini_all_failed",
-        chain=_gemini_chain(),
-        last_err=type(last_err).__name__ if last_err else "none",
-        msg=str(last_err)[:200] if last_err else "",
+        chain=",".join(chain),
+        err_type=last_err_type or "none",
+        detail=last_err_detail or "",
+        note="lanjut dengan skor heuristik saja",
     )
 
 
@@ -376,7 +385,8 @@ def _select_top(candidates: list[Candidate]) -> list[Candidate]:
         return chosen
 
     if allow_fb and candidates:
-        common.warn("selected_fallback", min_score=min_score, target=target)
+        common.warn("selected_fallback", min_score=min_score, target=target,
+                    note="ambil top-N karena tidak ada yang lolos")
         chosen = _add(candidates, 0.0, target)
         common.info("selected_fallback_done", count=len(chosen))
         return chosen
