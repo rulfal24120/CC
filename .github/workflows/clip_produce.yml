@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       source_url:
-        description: "URL YouTube sumber"
+        description: "URL sumber (YouTube atau Google Drive)"
         required: true
         type: string
       verbose:
@@ -57,9 +57,11 @@ jobs:
         run: |
           pip install "setuptools>=71,<79" wheel
 
-      - name: Install whisper (no-deps, no-build-isolation)
+      - name: Install whisper + dependencies
         run: |
-          pip install --no-deps --no-build-isolation openai-whisper==20240930
+          # PERBAIKAN: --no-deps dihapus. --no-build-isolation dipertahankan
+          # agar setup.py Whisper memakai torch yang sudah diinstal (CPU).
+          pip install --no-build-isolation openai-whisper==20240930
 
       - name: Install deps (yt-dlp + PO Token plugin)
         run: |
