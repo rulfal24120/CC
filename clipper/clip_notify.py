@@ -1,4 +1,14 @@
-"""Notifikasi Telegram (teks + thumbnail opsional)."""
+"""Notifikasi Telegram (teks + thumbnail + video klip).
+
+Perubahan vs versi lama:
+- Tambah send_video(): kirim file MP4 ke chat via sendVideo (multipart).
+  Batas 50 MB per file (batas bot Telegram standar). Kalau > 50 MB,
+  fallback ke teks saja, pipeline TIDAK gagal.
+- Tambah send_clip_videos(): iterasi list clip yang sudah dirender, kirim
+  video per clip dengan caption berisi clip_id, durasi, skor, dan cuplikan.
+- Semua fungsi kirim bersifat best-effort: gagal kirim = warn, bukan fail.
+"""
+
 from __future__ import annotations
 
 import json
@@ -7,6 +17,10 @@ from pathlib import Path
 from . import common
 
 TG = "https://api.telegram.org"
+
+# Batas bot Telegram standar. Untuk file lebih besar butuh Bot API server
+# lokal, di luar cakupan trial ini.
+TELEGRAM_MAX_UPLOAD_MB = 50
 
 
 def _api(method: str, payload: dict) -> dict:
@@ -22,6 +36,10 @@ def _api(method: str, payload: dict) -> dict:
 def _chat() -> str:
     return common.get_env("TELEGRAM_CHAT_ID", required=True)
 
+
+# ---------------------------------------------------------------------------
+# Kirim teks & foto
+# ---------------------------------------------------------------------------
 
 def send_text(text: str) -> None:
     _api("sendMessage", {"chat_id": _chat(), "text": text[:4000],
@@ -45,8 +63,103 @@ def send_photo(path: str, caption: str) -> None:
         send_text(caption)
 
 
+# ---------------------------------------------------------------------------
+# Kirim video (MP4 hasil render)
+# ---------------------------------------------------------------------------
+
+def send_video(path: str, caption: str = "",
+               max_mb: int = TELEGRAM_MAX_UPLOAD_MB) -> bool:
+    """Kirim satu file video ke Telegram. Return True kalau berhasil.
+
+    Best-effort: kalau gagal atau terlalu besar, kirim caption sebagai teks
+    dan return False. Tidak pernah raise.
+    """
+    import requests  # noqa: PLC0415
+    p = Path(path)
+    if not p.is_file():
+        common.warn("telegram_video_missing", path=str(p))
+        if caption:
+            send_text(caption)
+        return False
+
+    size_mb = p.stat().st_size / (1024 * 1024)
+    if size_mb > max_mb:
+        common.warn("telegram_video_too_large",
+                    path=str(p), size_mb=round(size_mb, 2), limit_mb=max_mb)
+        if caption:
+            send_text(caption + f"\n(file {size_mb:.1f} MB, terlalu besar "
+                                f"untuk bot Telegram)")
+        return False
+
+    token = common.get_env("TELEGRAM_BOT_TOKEN", required=True)
+    try:
+        with p.open("rb") as f:
+            r = requests.post(
+                f"{TG}/bot{token}/sendVideo",
+                data={
+                    "chat_id": _chat(),
+                    "caption": caption[:1000],
+                    "parse_mode": "HTML",
+                    "supports_streaming": "true",
+                },
+                files={"video": f},
+                timeout=180,
+            )
+    except Exception as exc:  # noqa: BLE001
+        common.warn("telegram_video_err", path=str(p),
+                    err=type(exc).__name__, detail=str(exc)[:200])
+        if caption:
+            send_text(caption)
+        return False
+
+    if r.status_code >= 400:
+        common.warn("telegram_video_fail", status=r.status_code,
+                    body=r.text[:200])
+        if caption:
+            send_text(caption)
+        return False
+
+    common.info("telegram_video_ok", path=str(p), size_mb=round(size_mb, 2))
+    return True
+
+
+def _clip_caption(clip: dict) -> str:
+    cid = str(clip.get("clip_id", "?"))
+    dur = clip.get("duration_sec", 0)
+    score = clip.get("final_score", clip.get("score", 0))
+    text = (clip.get("text") or "")[:200].replace("\n", " ")
+    return (
+        f"<b>Clip siap</b> <code>{cid}</code>\n"
+        f"Durasi: {dur}s | Skor: {score}\n\n"
+        f"{text}"
+    )
+
+
+def send_clip_videos(clips: list[dict]) -> int:
+    """Kirim semua klip yang punya video_path. Return jumlah yang terkirim."""
+    sent = 0
+    for c in clips:
+        path = c.get("video_path")
+        if not path:
+            continue
+        try:
+            if send_video(path, _clip_caption(c)):
+                sent += 1
+        except Exception as exc:  # noqa: BLE001
+            common.warn("telegram_send_clip_err",
+                        clip_id=c.get("clip_id"),
+                        err=type(exc).__name__,
+                        detail=str(exc)[:200])
+    common.info("telegram_clips_sent", total=len(clips), sent=sent)
+    return sent
+
+
+# ---------------------------------------------------------------------------
+# Notifikasi tingkat pipeline
+# ---------------------------------------------------------------------------
+
 def produce_summary(source_url: str, clips: list[dict]) -> None:
-    lines = [f"<b>Apaiya? Clipper</b>",
+    lines = ["<b>Apaiya? Clipper</b>",
              f"Sumber: {source_url}",
              f"Clip siap dijadwalkan: <b>{len(clips)}</b>", ""]
     for c in clips:
