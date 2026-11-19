@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       verbose:
-        description: "Log verbose yt-dlp (1=aktif, untuk debug bot-check)"
+        description: "Log verbose yt-dlp (1=aktif)"
         required: false
         default: "1"
         type: string
@@ -23,7 +23,7 @@ concurrency:
 jobs:
   produce:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20          # turun dari 30
 
     steps:
       - uses: actions/checkout@v4
@@ -44,78 +44,70 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface/hub
-          key: faster-whisper-small-${{ runner.os }}-v1
+          key: faster-whisper-${{ vars.WHISPER_MODEL || 'small' }}-${{ runner.os }}-v1
 
       - name: Ensure FFmpeg
         run: |
           if ! command -v ffmpeg >/dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y ffmpeg
+            sudo apt-get update -qq && sudo apt-get install -y ffmpeg
           fi
           ffmpeg -version | head -1
 
       - name: Install deps
-        run: |
-          pip install -U -r requirements_clips.txt
+        run: pip install -U -r requirements_clips.txt
 
       - name: Download font
         run: |
           mkdir -p assets/fonts
-          if [ ! -f assets/fonts/Poppins-Bold.ttf ]; then
+          [ -f assets/fonts/Poppins-Bold.ttf ] || \
             curl -fsSL -o assets/fonts/Poppins-Bold.ttf \
               https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-Bold.ttf
+
+      # --- Setup YouTube hanya jika sumber BUKAN Drive ---
+      - name: Detect source kind
+        id: src
+        run: |
+          URL="${{ github.event.inputs.source_url }}"
+          if [[ "$URL" == *"drive.google.com"* ]]; then
+            echo "kind=drive" >> "$GITHUB_OUTPUT"
+          else
+            echo "kind=youtube" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Prepare YouTube cookies
+        if: steps.src.outputs.kind == 'youtube'
         env:
           COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
         run: |
           if [ -n "$COOKIES_B64" ]; then
             echo "$COOKIES_B64" | base64 -d > cookies.txt
-            echo "cookies.txt siap ($(wc -l < cookies.txt) baris)"
-          else
-            echo "Secret YOUTUBE_COOKIES_B64 kosong"
           fi
 
-      - name: Install Deno (JS runtime untuk yt-dlp)
+      - name: Install Deno
+        if: steps.src.outputs.kind == 'youtube'
         run: |
           curl -fsSL https://deno.land/install.sh | sh
           echo "$HOME/.deno/bin" >> "$GITHUB_PATH"
 
-      - name: Pull PO Token Provider image (latest)
-        run: |
-          docker pull brainicism/bgutil-ytdlp-pot-provider:latest
-
-      - name: Start PO Token Provider (Docker sidecar)
+      - name: Start PO Token Provider
+        if: steps.src.outputs.kind == 'youtube'
         run: |
           docker run --name bgutil-provider -d --init \
             -p 127.0.0.1:4416:4416 \
             brainicism/bgutil-ytdlp-pot-provider:latest
-
-      - name: Wait for PO Token Provider
-        run: |
-          for i in $(seq 1 30); do
+          for i in $(seq 1 20); do
             if (echo > /dev/tcp/127.0.0.1/4416) >/dev/null 2>&1; then
-              echo "PO Token Provider siap di port 4416 (percobaan $i)"
-              exit 0
+              echo "PO Token siap ($i)"; exit 0
             fi
-            echo "Menunggu provider... ($i/30)"
-            sleep 2
+            sleep 1
           done
-          echo "Provider tidak merespons; log container:"
-          docker logs bgutil-provider
-          exit 1
-
-      - name: Verify yt-dlp + plugin
-        run: |
-          export PATH="$HOME/.deno/bin:$PATH"
-          yt-dlp --version
-          yt-dlp -v --simulate "https://www.youtube.com/watch?v=BaW_jenozKc" 2>&1 | grep -E "\[pot\]|PO Token|bgutil" || echo "Tidak ada baris [pot]"
+          docker logs bgutil-provider; exit 1
 
       - name: Sanity check
         run: python -m py_compile clipper/*.py
 
       - name: Run produce
+        id: run_produce
         env:
           SOURCE_URL: ${{ github.event.inputs.source_url }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -126,6 +118,7 @@ jobs:
           YTDLP_COOKIES_FILE: cookies.txt
           YTDLP_VERBOSE: ${{ github.event.inputs.verbose }}
           GH_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WHISPER_MODEL: ${{ vars.WHISPER_MODEL || 'small' }}
           TARGET_CLIPS: "3"
           MIN_CLIP_SCORE: "4.0"
           MIN_CLIP_SEC: "25"
@@ -136,37 +129,19 @@ jobs:
           BGM_MOOD: "penasaran"
         run: python -m clipper.run_produce
 
-      - name: Dump provider logs on failure
-        if: failure()
-        run: |
-          docker ps -a --filter name=bgutil-provider
-          docker logs --tail 200 bgutil-provider || true
-
       - name: Commit history & pool
         if: always()
         run: |
           git config user.name "apaiya-bot"
           git config user.email "bot@apaiya.local"
-          git add history_clips.json || true
-          git add state/publish_pool.json || true
+          git add history_clips.json state/publish_pool.json 2>/dev/null || true
           git diff --cached --quiet || git commit -m "chore(history): run ${{ github.run_id }} [skip ci]"
           git push || true
 
-      - name: Upload artifacts (ringkas)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: produce-${{ github.run_id }}
-          path: |
-            build_clips/transcript.json
-            build_clips/selected_clips.json
-            build_clips/failed_reason.txt
-            output_clips/
-          retention-days: 1
-          if-no-files-found: ignore
+      # ❌ Upload artifact DIHAPUS — klip dikirim via Telegram, debug di log
 
       - name: Notify failure
-        if: failure()
+        if: failure() && steps.run_produce.outcome == 'failure'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -179,14 +154,12 @@ jobs:
               reason = open("build_clips/failed_reason.txt").read()
           requests.post(
               f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",
-              json={
-                  "chat_id": os.environ["TELEGRAM_CHAT_ID"],
-                  "text": f"Pipeline produce gagal: {reason[:500]}\n{os.environ['GH_RUN_URL']}",
-              },
+              json={"chat_id": os.environ["TELEGRAM_CHAT_ID"],
+                    "text": f"Pipeline produce gagal: {reason[:500]}\n{os.environ['GH_RUN_URL']}"},
               timeout=15,
           )
           PY
 
       - name: Stop PO Token Provider
-        if: always()
-        run: docker stop bgutil-provider || true
+        if: always() && steps.src.outputs.kind == 'youtube'
+        run: docker stop bgutil-provider 2>/dev/null || true
