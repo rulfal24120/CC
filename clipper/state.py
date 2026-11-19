@@ -1,7 +1,7 @@
 """Manajemen state: publish_pool.json dan history_clips.json.
 
-Input: file JSON di repo. Output: file JSON yang sama, ditulis atomik.
-Tidak menyentuh history.json pipeline lama.
+Trial: fungsi pool tidak dipakai oleh run_produce, hanya history untuk dedup.
+Publish: fungsi pool dipakai oleh run_publish saat diaktifkan nanti.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ MAX_ATTEMPTS = 3
 
 
 # ---------------------------------------------------------------------------
-# Publish pool
+# Publish pool (tidak dipakai di trial, disiapkan untuk publish nanti)
 # ---------------------------------------------------------------------------
 
 def load_pool() -> list[dict[str, Any]]:
@@ -39,7 +39,6 @@ def allocate_slots(
     per_day: int = PUBLISH_PER_DAY,
     start_date: date | None = None,
 ) -> list[tuple[str, int]]:
-    """Alokasikan (tanggal_iso, slot) untuk n clip baru, 2 per hari."""
     counts: Counter[str] = Counter(
         c["scheduled_date"] for c in pool if c.get("status") == "scheduled"
     )
@@ -57,7 +56,6 @@ def allocate_slots(
 
 
 def add_clips_to_pool(clips: list[dict[str, Any]]) -> list[tuple[str, int]]:
-    """Tambahkan clip baru ke pool dengan slot terjadwal. Return alokasinya."""
     pool = load_pool()
     slots = allocate_slots(pool, len(clips))
     for clip, (date_iso, slot_num) in zip(clips, slots):
@@ -67,18 +65,13 @@ def add_clips_to_pool(clips: list[dict[str, Any]]) -> list[tuple[str, int]]:
         clip["slot"] = slot_num
         clip["attempts"] = 0
         pool.append(clip)
-        common.info(
-            "pool_added",
-            clip_id=clip.get("clip_id"),
-            date=date_iso,
-            slot=slot_num,
-        )
+        common.info("pool_added", clip_id=clip.get("clip_id"),
+                    date=date_iso, slot=slot_num)
     save_pool(pool)
     return slots
 
 
 def get_due_clips(current_slot: int, today: date | None = None) -> list[dict[str, Any]]:
-    """Clip yang layak publish sekarang: tanggal < hari ini, atau hari ini slot <= current_slot."""
     today = today or date.today()
     today_iso = today.isoformat()
     due = []
@@ -114,7 +107,8 @@ def mark_failed(clip_id: str, reason: str) -> None:
             c["last_error"] = reason[:500]
             if c["attempts"] >= MAX_ATTEMPTS:
                 c["status"] = "failed"
-                common.error("pool_failed_permanent", clip_id=clip_id, reason=reason[:200])
+                common.error("pool_failed_permanent", clip_id=clip_id,
+                             reason=reason[:200])
     save_pool(pool)
 
 
@@ -124,7 +118,7 @@ def remove_from_pool(clip_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# History
+# History (dipakai trial untuk dedup)
 # ---------------------------------------------------------------------------
 
 def load_history() -> list[dict[str, Any]]:
@@ -138,7 +132,6 @@ def append_history(entry: dict[str, Any]) -> None:
 
 
 def is_duplicate_hash(clip_hash: str) -> bool:
-    """Cek hash clip vs history + pool yang masih aktif."""
     for h in load_history():
         if h.get("clip_hash") == clip_hash:
             return True
@@ -149,7 +142,6 @@ def is_duplicate_hash(clip_hash: str) -> bool:
 
 
 def is_duplicate_source(source_url: str, start_sec: float, end_sec: float) -> bool:
-    """Cek overlap timestamp untuk sumber yang sama."""
     for h in load_history():
         if h.get("source_url") != source_url:
             continue
