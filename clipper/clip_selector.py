@@ -11,8 +11,8 @@ Perbaikan utama (vs versi sebelumnya):
    enumerasi kandidat selalu punya bahan.
 3. _enumerate_with_fallback: kalau rentang env (MIN_CLIP_SEC..MAX_CLIP_SEC)
    menghasilkan 0 kandidat, longgarkan bertahap sebelum menyerah.
-4. _gemini_score: fallback chain model (GEMINI_MODEL_CHAIN) + parser JSON
-   toleran markdown fence.
+4. _gemini_score: fallback chain model Gemini 3.x + parser JSON toleran
+   markdown fence.
 5. _select_top: kalau tak ada yang lolos MIN_CLIP_SCORE, ambil top-N
    terbaik (bisa dimatikan dengan ALLOW_FALLBACK_SELECTION=0).
 """
@@ -40,10 +40,10 @@ MAX_SENT_SEC = 8.0
 MAX_SENT_WORDS = 20
 CHUNK_SEC = 15.0
 DEFAULT_GEMINI_CHAIN = [
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
 ]
 
 
