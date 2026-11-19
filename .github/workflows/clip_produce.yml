@@ -23,7 +23,7 @@ concurrency:
 jobs:
   produce:
     runs-on: ubuntu-latest
-    timeout-minutes: 20          # turun dari 30
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -63,7 +63,6 @@ jobs:
             curl -fsSL -o assets/fonts/Poppins-Bold.ttf \
               https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-Bold.ttf
 
-      # --- Setup YouTube hanya jika sumber BUKAN Drive ---
       - name: Detect source kind
         id: src
         run: |
@@ -119,6 +118,7 @@ jobs:
           YTDLP_VERBOSE: ${{ github.event.inputs.verbose }}
           GH_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           WHISPER_MODEL: ${{ vars.WHISPER_MODEL || 'small' }}
+          SEND_CLIP_VIDEOS: ${{ vars.SEND_CLIP_VIDEOS || '1' }}
           TARGET_CLIPS: "3"
           MIN_CLIP_SCORE: "4.0"
           MIN_CLIP_SEC: "25"
@@ -137,8 +137,6 @@ jobs:
           git add history_clips.json state/publish_pool.json 2>/dev/null || true
           git diff --cached --quiet || git commit -m "chore(history): run ${{ github.run_id }} [skip ci]"
           git push || true
-
-      # ❌ Upload artifact DIHAPUS — klip dikirim via Telegram, debug di log
 
       - name: Notify failure
         if: failure() && steps.run_produce.outcome == 'failure'
