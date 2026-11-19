@@ -1,4 +1,5 @@
 yt-dlp[default]>=2025.11.12
+bgutil-ytdlp-pot-provider>=2.0.2
 curl-cffi>=0.11.0
 requests>=2.31.0
 Pillow>=10.2.0
