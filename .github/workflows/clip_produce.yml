@@ -56,7 +56,7 @@ jobs:
         run: |
           pip install --no-deps --no-build-isolation openai-whisper==20240930
 
-      - name: Install deps (upgrade yt-dlp + curl-cffi)
+      - name: Install deps (yt-dlp + PO Token plugin)
         run: |
           pip install -U -r requirements_clips.txt
 
@@ -82,7 +82,7 @@ jobs:
             echo "$COOKIES_B64" | base64 -d > cookies.txt
             echo "cookies.txt siap ($(wc -l < cookies.txt) baris)"
           else
-            echo "Secret YOUTUBE_COOKIES_B64 kosong; bot-check kemungkinan besar muncul"
+            echo "Secret YOUTUBE_COOKIES_B64 kosong"
           fi
 
       - name: Install Deno (JS runtime untuk yt-dlp)
@@ -90,12 +90,43 @@ jobs:
           curl -fsSL https://deno.land/install.sh | sh
           echo "$HOME/.deno/bin" >> "$GITHUB_PATH"
 
-      - name: Verify yt-dlp + Deno
+      # ---------------------------------------------------------------
+      # PO Token Provider (bgutil-ytdlp-pot-provider) sebagai sidecar
+      # ---------------------------------------------------------------
+      - name: Start PO Token Provider (Docker sidecar)
+        run: |
+          docker run --name bgutil-provider -d --init \
+            -p 127.0.0.1:4416:4416 \
+            brainicism/bgutil-ytdlp-pot-provider
+
+      - name: Wait for PO Token Provider
+        run: |
+          for i in $(seq 1 30); do
+            if (echo > /dev/tcp/127.0.0.1/4416) >/dev/null 2>&1; then
+              echo "PO Token Provider siap di port 4416 (percobaan $i)"
+              exit 0
+            fi
+            echo "Menunggu provider... ($i/30)"
+            sleep 2
+          done
+          echo "Provider tidak merespons; log container:"
+          docker logs bgutil-provider
+          exit 1
+
+      - name: Show provider logs (diagnostik)
+        if: always()
+        run: |
+          echo "=== container status ==="
+          docker ps -a --filter name=bgutil-provider
+          echo "=== recent logs ==="
+          docker logs --tail 50 bgutil-provider || true
+
+      - name: Verify yt-dlp + plugin
         run: |
           export PATH="$HOME/.deno/bin:$PATH"
           yt-dlp --version
-          deno --version
-          yt-dlp --list-impersonate-targets | head -20
+          yt-dlp --list-extractor-args youtube || true
+          python -c "import bgutil_ytdlp_pot_provider; print('PO token plugin OK')"
 
       - name: Sanity check
         run: python -m py_compile clipper/*.py
@@ -108,6 +139,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           YTDLP_COOKIES_FILE: cookies.txt
+          POT_PROVIDER_URL: http://127.0.0.1:4416
           GH_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           TARGET_CLIPS: "5"
           MIN_CLIP_SCORE: "7.0"
@@ -116,6 +148,14 @@ jobs:
           MAX_SOURCE_MINUTES: "60"
           MAX_SOURCE_MB: "2048"
         run: python -m clipper.run_produce
+
+      - name: Dump provider logs on failure
+        if: failure()
+        run: |
+          echo "=== container status ==="
+          docker ps -a --filter name=bgutil-provider
+          echo "=== logs ==="
+          docker logs --tail 200 bgutil-provider || true
 
       - name: Commit history
         if: always()
@@ -157,3 +197,7 @@ jobs:
               timeout=15,
           )
           PY
+
+      - name: Stop PO Token Provider
+        if: always()
+        run: docker stop bgutil-provider || true
