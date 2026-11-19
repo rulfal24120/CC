@@ -1,21 +1,23 @@
-"""Unduh video sumber YouTube via yt-dlp dengan PO Token Provider.
+"""Unduh video sumber: YouTube (yt-dlp) atau Google Drive (gdown).
 
-Input : SOURCE_URL (env), YTDLP_COOKIES_FILE (opsional),
-        YTDLP_VERBOSE (opsional, "1" untuk log verbose)
-Output: build_clips/source/video.mp4 + info.json
+Input : SOURCE_URL (env) — auto-detect host
+        YTDLP_COOKIES_FILE (opsional, hanya untuk YouTube)
+        YTDLP_VERBOSE=1 (opsional, hanya untuk YouTube)
+Output: build_clips/source/video.<ext> + info.json
 
-Strategi anti-bot-check:
-1. Cookies (YOUTUBE_COOKIES_B64)
-2. Deno sebagai JS runtime
-3. --impersonate chrome (curl-cffi)
-4. PO Token Provider (bgutil-ytdlp-pot-provider) di http://127.0.0.1:4416
-5. player_client=mweb,tv,web_safari memicu permintaan PO Token
+Gate  : host didukung, bukan folder Drive, durasi <= MAX_SOURCE_MINUTES,
+        ukuran <= MAX_SOURCE_MB, bukan live YouTube.
+
+YouTube : cookies + Deno + impersonate chrome + PO Token Provider.
+Drive   : gdown (tidak butuh cookies / bot-check).
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import socket
 import subprocess
 from pathlib import Path
@@ -24,12 +26,26 @@ from urllib.parse import urlparse
 from . import common
 
 SRC_DIR = Path("build_clips/source")
-ALLOWED_HOSTS = {"youtube.com", "youtu.be", "youtube-nocookie.com"}
+
+YOUTUBE_HOSTS = {"youtube.com", "youtu.be", "youtube-nocookie.com"}
+DRIVE_HOSTS = {"drive.google.com"}
+
 POT_HOST = "127.0.0.1"
 POT_PORT = 4416
 
+# Regex file ID Google Drive
+DRIVE_FILE_PATTERNS = [
+    re.compile(r"drive\.google\.com/file/d/([a-zA-Z0-9_-]{10,})"),
+    re.compile(r"drive\.google\.com/uc\?(?:export=download&)?id=([a-zA-Z0-9_-]{10,})"),
+    re.compile(r"drive\.google\.com/open\?id=([a-zA-Z0-9_-]{10,})"),
+]
 
-def _validate_url(url: str) -> None:
+
+# ---------------------------------------------------------------------------
+# Deteksi & validasi
+# ---------------------------------------------------------------------------
+
+def _normalized_host(url: str) -> str:
     try:
         parsed = urlparse(url.strip())
     except ValueError:
@@ -41,9 +57,145 @@ def _validate_url(url: str) -> None:
         host = host[4:]
     if host.startswith("m."):
         host = host[2:]
-    if host not in ALLOWED_HOSTS:
-        common.fail(f"source_url bukan host YouTube: {host or url}")
+    return host
 
+
+def _detect_source_type(url: str) -> str:
+    host = _normalized_host(url)
+    if host in YOUTUBE_HOSTS:
+        return "youtube"
+    if host in DRIVE_HOSTS:
+        return "drive"
+    common.fail(
+        f"host tidak didukung: {host}. "
+        "Didukung: youtube.com, youtu.be, drive.google.com"
+    )
+    raise RuntimeError("unreachable")
+
+
+def _validate_drive_url(url: str) -> str:
+    """Kembalikan file_id Drive. Tolak folder / format tak dikenal."""
+    if "/drive/folders/" in url:
+        common.fail(
+            "URL folder Google Drive tidak didukung. "
+            "Bagikan file tunggal (bukan folder) dan gunakan link file."
+        )
+    for pat in DRIVE_FILE_PATTERNS:
+        m = pat.search(url)
+        if m:
+            return m.group(1)
+    common.fail(
+        "URL Google Drive tidak dikenali. Format yang didukung: "
+        "https://drive.google.com/file/d/FILE_ID/view atau "
+        "https://drive.google.com/uc?id=FILE_ID"
+    )
+    raise RuntimeError("unreachable")
+
+
+# ---------------------------------------------------------------------------
+# Google Drive
+# ---------------------------------------------------------------------------
+
+def _ffprobe_duration(path: Path) -> float:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        common.warn("ffprobe_missing")
+        return 0.0
+    proc = common.run(
+        [ffprobe, "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        check=False, timeout=60, label="ffprobe",
+    )
+    try:
+        return float((proc.stdout or "").strip())
+    except (ValueError, TypeError):
+        common.warn("ffprobe_parse_failed", raw=(proc.stdout or "")[:100])
+        return 0.0
+
+
+def _fetch_drive(source_url: str, out_dir: Path) -> dict:
+    file_id = _validate_drive_url(source_url)
+    common.info("drive_start", file_id=file_id)
+
+    try:
+        import gdown  # noqa: PLC0415
+    except ImportError as exc:
+        common.fail(f"gdown tidak terpasang: {exc}")
+
+    # Bersihkan sisa unduhan Drive sebelumnya di folder yang sama
+    for old in out_dir.glob("video.*"):
+        if old.is_file():
+            old.unlink()
+    for old in out_dir.glob("_drive_temp*"):
+        if old.is_file():
+            old.unlink()
+
+    temp = out_dir / "_drive_temp"
+    direct_url = f"https://drive.google.com/uc?id={file_id}"
+    common.info("drive_download", url=direct_url)
+    try:
+        out = gdown.download(direct_url, str(temp), quiet=False, fuzzy=True)
+    except Exception as exc:  # noqa: BLE001
+        common.fail(f"gdown gagal: {type(exc).__name__}: {exc}")
+
+    if not out:
+        common.fail(
+            "gdown tidak menghasilkan file. Kemungkinan: file private, "
+            "kuota Drive terlampaui, atau file bukan video."
+        )
+
+    downloaded = Path(out)
+    if not downloaded.is_file():
+        # gdown kadang menambah ekstensi; cari kandidat _drive_temp.*
+        candidates = list(out_dir.glob("_drive_temp*"))
+        if not candidates:
+            common.fail("gdown tidak menghasilkan file di folder sumber")
+        downloaded = candidates[0]
+
+    ext = downloaded.suffix.lower() or ".mp4"
+    if ext not in {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi"}:
+        common.warn("drive_unusual_extension", ext=ext,
+                    note="ffmpeg akan mendeteksi format dari konten")
+
+    video_path = out_dir / f"video{ext}"
+    if video_path.exists():
+        video_path.unlink()
+    downloaded.rename(video_path)
+
+    size_mb = video_path.stat().st_size / (1024 * 1024)
+    max_mb = common.get_env_int("MAX_SOURCE_MB", 2048)
+    if size_mb > max_mb:
+        video_path.unlink(missing_ok=True)
+        common.fail(f"ukuran Drive {size_mb:.1f}MB > batas {max_mb}MB")
+
+    duration = _ffprobe_duration(video_path)
+    max_min = common.get_env_int("MAX_SOURCE_MINUTES", 60)
+    if duration > 0 and duration > max_min * 60:
+        video_path.unlink(missing_ok=True)
+        common.fail(f"durasi Drive {duration:.0f} dtk > batas {max_min} menit")
+
+    title = downloaded.stem or "Google Drive video"
+    result = {
+        "source_url": source_url,
+        "source_type": "drive",
+        "file_id": file_id,
+        "video_path": str(video_path),
+        "title": title,
+        "channel": "Google Drive",
+        "uploader_url": "",
+        "duration_sec": duration,
+        "size_mb": round(size_mb, 2),
+        "fetched_at": common.now_iso(),
+    }
+    common.write_json(out_dir / "info.json", result)
+    common.info("drive_ok", duration=f"{duration:.1f}s",
+                size_mb=result["size_mb"], title=title)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# YouTube (dengan PO Token Provider)
+# ---------------------------------------------------------------------------
 
 def _pot_provider_ready(timeout: float = 2.0) -> bool:
     try:
@@ -66,11 +218,6 @@ def _cookies_arg() -> list[str]:
 
 
 def _pot_args() -> list[str]:
-    """Konfigurasi PO Token Provider.
-
-    player_client=mweb,tv,web_safari memicu permintaan PO Token.
-    fetch_pot=always memaksa token diambil untuk klien yang butuh.
-    """
     if not _pot_provider_ready():
         common.warn("pot_provider_unreachable", host=POT_HOST, port=POT_PORT)
         return []
@@ -84,9 +231,7 @@ def _pot_args() -> list[str]:
 
 
 def _verbose_arg() -> list[str]:
-    if os.getenv("YTDLP_VERBOSE", "").strip() == "1":
-        return ["-v"]
-    return []
+    return ["-v"] if os.getenv("YTDLP_VERBOSE", "").strip() == "1" else []
 
 
 def _base_args() -> list[str]:
@@ -112,17 +257,15 @@ def _is_bot_check(stderr: str) -> bool:
     return "sign in to confirm you" in low or "not a bot" in low
 
 
-def _probe(url: str) -> dict:
+def _probe_youtube(url: str) -> dict:
     proc = _run_ytdlp(["--dump-single-json", url],
                       label="yt-dlp-meta", timeout=180)
     if proc.returncode != 0:
         if _is_bot_check(proc.stderr):
             common.fail(
-                "Bot-check muncul meski PO Token Provider aktif. "
-                "Jalankan ulang dengan YTDLP_VERBOSE=1 untuk melihat apakah "
-                "baris 'Generating a gvs PO Token' muncul. Jika tidak muncul, "
-                "IP runner sudah diblokir YouTube di tahap awal — perlu proxy "
-                "residensial atau jalankan di luar GitHub Actions."
+                "Bot-check YouTube meski PO Token aktif. Jalankan ulang dengan "
+                "YTDLP_VERBOSE=1; jika 'Generating a gvs PO Token' tidak muncul, "
+                "IP runner sudah diblokir. Alternatif: pakai Google Drive sebagai sumber."
             )
         common.fail(
             f"yt-dlp-meta gagal (exit {proc.returncode}): "
@@ -146,7 +289,7 @@ def _check_allowed_channel(channel: str) -> None:
         common.warn("channel_not_in_whitelist", channel=channel)
 
 
-def _download(url: str, out_dir: Path) -> Path:
+def _download_youtube(url: str, out_dir: Path) -> Path:
     video_path = out_dir / "video.mp4"
     if video_path.is_file() and video_path.stat().st_size > 0:
         common.info("fetch_skip_cache", path=str(video_path),
@@ -166,14 +309,9 @@ def _download(url: str, out_dir: Path) -> Path:
         url,
     ]
     proc = _run_ytdlp(cmd_extra, label="yt-dlp-download", timeout=1800)
-
     if proc.returncode != 0:
         if _is_bot_check(proc.stderr):
-            common.fail(
-                "Bot-check muncul saat download. "
-                "Coba hapus cookies (andalkan PO token murni) atau "
-                "periksa log container bgutil-provider."
-            )
+            common.fail("Bot-check saat download. Coba hapus cookies atau pakai Google Drive.")
         common.fail(
             f"yt-dlp download gagal (exit {proc.returncode}): "
             f"{(proc.stderr or '')[:300]}"
@@ -183,18 +321,9 @@ def _download(url: str, out_dir: Path) -> Path:
     return video_path
 
 
-def fetch(source_url: str) -> dict:
-    _validate_url(source_url)
-    out_dir = common.ensure_dir(SRC_DIR)
-    info_file = out_dir / "info.json"
-    if info_file.is_file():
-        meta = common.read_json(info_file) or {}
-        if meta.get("video_path") and Path(meta["video_path"]).is_file():
-            common.info("fetch_meta_cache", path=str(info_file))
-            return meta
-
-    common.info("fetch_start", url=source_url)
-    meta = _probe(source_url)
+def _fetch_youtube(source_url: str, out_dir: Path) -> dict:
+    common.info("fetch_start", source="youtube", url=source_url)
+    meta = _probe_youtube(source_url)
 
     if meta.get("is_live"):
         common.fail("sumber masih live; tunggu selesai dan coba lagi")
@@ -209,10 +338,11 @@ def fetch(source_url: str) -> dict:
     channel = meta.get("channel") or meta.get("uploader") or ""
     _check_allowed_channel(channel)
 
-    video_path = _download(source_url, out_dir)
+    video_path = _download_youtube(source_url, out_dir)
     size_mb = video_path.stat().st_size / (1024 * 1024)
     result = {
         "source_url": source_url,
+        "source_type": "youtube",
         "video_path": str(video_path),
         "title": meta.get("title") or "",
         "channel": channel,
@@ -221,10 +351,37 @@ def fetch(source_url: str) -> dict:
         "size_mb": round(size_mb, 2),
         "fetched_at": common.now_iso(),
     }
-    common.write_json(info_file, result)
-    common.info("fetch_ok", duration=f"{duration:.1f}s",
-                size_mb=result["size_mb"])
+    common.write_json(out_dir / "info.json", result)
+    common.info("fetch_ok", source="youtube",
+                duration=f"{duration:.1f}s", size_mb=result["size_mb"])
     return result
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def fetch(source_url: str) -> dict:
+    _detect_source_type(source_url)  # validasi host lebih awal
+    out_dir = common.ensure_dir(SRC_DIR)
+    info_file = out_dir / "info.json"
+
+    # Cache hanya valid kalau source_url-nya sama persis
+    if info_file.is_file():
+        meta = common.read_json(info_file) or {}
+        if (meta.get("source_url") == source_url
+                and meta.get("video_path")
+                and Path(meta["video_path"]).is_file()):
+            common.info("fetch_meta_cache", path=str(info_file))
+            return meta
+
+    stype = _detect_source_type(source_url)
+    if stype == "youtube":
+        return _fetch_youtube(source_url, out_dir)
+    if stype == "drive":
+        return _fetch_drive(source_url, out_dir)
+    common.fail(f"source_type tidak dikenal: {stype}")
+    raise RuntimeError("unreachable")
 
 
 def _main() -> None:
