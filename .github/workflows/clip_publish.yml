@@ -1,0 +1,61 @@
+name: clip_publish
+on:
+  schedule:
+    - cron: '0 5 * * *'   # 12:00 WIB
+    - cron: '0 12 * * *'  # 19:00 WIB
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: clip_publish
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Install deps
+        run: pip install -r requirements_clips.txt
+      - name: Checkout artifacts
+        # Karena state disimpan di repo, video master harus diunduh dari artifact terakhir.
+        # Untuk v1 kita skip: publish butuh file lokal. Solusi minimal:
+        # jalankan workflow ini DIPICU dari produce setelah approve, atau
+        # simpan video di storage persisten (misal S3/Cloudflare R2).
+        # Sementara: exit 0 dengan warning jika pool kosong.
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          p = pathlib.Path("state/publish_pool.json")
+          due = []
+          if p.is_file():
+              pool = json.loads(p.read_text())
+              from datetime import date
+              today = date.today().isoformat()
+              slot = 1 if "05" in "${{ github.event.schedule }}" else 2
+              due = [c for c in pool if c.get("status")=="scheduled"
+                     and c.get("scheduled_date","9999")<=today
+                     and int(c.get("slot",99))<=slot][:2]
+          print(json.dumps({"due": [c["clip_id"] for c in due]}))
+          PY
+      - name: Run publish
+        if: false  # aktifkan setelah storage persisten siap
+        env:
+          SLOT: ${{ github.event.schedule == '0 5 * * *' && '1' || '2' }}
+          ZER_API_KEY: ${{ secrets.ZER_API_KEY }}
+          ZER_ID_YT: ${{ secrets.ZER_ID_YT }}
+          ZER_ID_FB: ${{ secrets.ZER_ID_FB }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m clipper.run_publish
+      - name: Commit state
+        if: always()
+        run: |
+          git config user.name "apaiya-bot"
+          git config user.email "bot@apaiya.local"
+          git add state/ history_clips.json || true
+          git diff --cached --quiet || git commit -m "chore(state): publish ${{ github.run_id }} [skip ci]"
+          git push || true
