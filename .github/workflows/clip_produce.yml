@@ -1,4 +1,5 @@
 name: clip_produce
+
 on:
   workflow_dispatch:
     inputs:
@@ -6,58 +7,77 @@ on:
         description: "URL YouTube sumber"
         required: true
         type: string
+
 permissions:
   contents: write
+
 concurrency:
   group: clip_produce
   cancel-in-progress: false
+
 jobs:
   produce:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
+
       - uses: actions/setup-python@v5
-        with: { python-version: '3.11' }
-      - uses: actions/cache@v4
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: pip-${{ runner.os }}-${{ hashFiles('requirements_clips.txt') }}
-      - name: FFmpeg
+
+      - name: Ensure FFmpeg
         run: |
           if ! command -v ffmpeg >/dev/null; then
             sudo apt-get update -qq
             sudo apt-get install -y ffmpeg
           fi
           ffmpeg -version | head -1
+
       - name: Install torch CPU
         run: |
           pip install --index-url https://download.pytorch.org/whl/cpu \
             torch==2.4.1+cpu torchvision==0.19.1+cpu
-      - name: Install whisper
-        run: pip install --no-deps openai-whisper==20240930
+
+      # --- PERBAIKAN: pin setuptools <80 agar pkg_resources tersedia ---
+      - name: Pin setuptools for pkg_resources
+        run: |
+          pip install "setuptools>=71,<79" wheel
+
+      - name: Install whisper (no-deps, no-build-isolation)
+        run: |
+          pip install --no-deps --no-build-isolation openai-whisper==20240930
+      # ------------------------------------------------------------------
+
       - name: Install deps
         run: pip install -r requirements_clips.txt
-      - name: Cache Whisper
+
+      - name: Cache Whisper model
         uses: actions/cache@v4
         with:
           path: ~/.cache/whisper
-          key: whisper-small
-      - name: Cache yt-dlp
-        uses: actions/cache@v4
-        with:
-          path: build_clips/source
-          key: src-${{ github.event.inputs.source_url }}
+          key: whisper-small-v1
+
       - name: Download font
         run: |
           mkdir -p assets/fonts
-          [ -f assets/fonts/Poppins-Bold.ttf ] || \
+          if [ ! -f assets/fonts/Poppins-Bold.ttf ]; then
             curl -fsSL -o assets/fonts/Poppins-Bold.ttf \
               https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-Bold.ttf
-      - name: Sanity
-        run: |
-          python -m py_compile clipper/*.py
+          fi
+
+      - name: Sanity check
+        run: python -m py_compile clipper/*.py
+
       - name: Run produce
         env:
           SOURCE_URL: ${{ github.event.inputs.source_url }}
@@ -66,23 +86,33 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GH_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TARGET_CLIPS: "5"
+          MIN_CLIP_SCORE: "7.0"
+          MIN_CLIP_SEC: "40"
+          MAX_CLIP_SEC: "60"
+          MAX_SOURCE_MINUTES: "60"
+          MAX_SOURCE_MB: "2048"
         run: python -m clipper.run_produce
-      - name: Commit state
+
+      - name: Commit history
         if: always()
         run: |
           git config user.name "apaiya-bot"
           git config user.email "bot@apaiya.local"
-          git add state/ history_clips.json || true
-          git diff --cached --quiet || git commit -m "chore(state): produce ${{ github.run_id }} [skip ci]"
+          git add history_clips.json || true
+          git diff --cached --quiet || git commit -m "chore(history): run ${{ github.run_id }} [skip ci]"
           git push || true
-      - uses: actions/upload-artifact@v4
+
+      - name: Upload artifacts
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: produce-${{ github.run_id }}
           path: |
             build_clips/
             output_clips/
           retention-days: 7
+
       - name: Notify failure
         if: failure()
         env:
@@ -92,9 +122,15 @@ jobs:
         run: |
           python - <<'PY'
           import os, requests
-          r = open("build_clips/failed_reason.txt").read() if os.path.isfile("build_clips/failed_reason.txt") else "unknown"
-          requests.post(f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",
-            json={"chat_id": os.environ["TELEGRAM_CHAT_ID"],
-                  "text": f"Pipeline produce gagal: {r[:500]}\n{os.environ['GH_RUN_URL']}"},
-            timeout=15)
+          reason = "unknown"
+          if os.path.isfile("build_clips/failed_reason.txt"):
+              reason = open("build_clips/failed_reason.txt").read()
+          requests.post(
+              f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",
+              json={
+                  "chat_id": os.environ["TELEGRAM_CHAT_ID"],
+                  "text": f"Pipeline produce gagal: {reason[:500]}\n{os.environ['GH_RUN_URL']}",
+              },
+              timeout=15,
+          )
           PY
