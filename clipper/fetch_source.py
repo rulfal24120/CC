@@ -2,6 +2,7 @@
 
 Input : SOURCE_URL (env) — auto-detect host
         YTDLP_COOKIES_FILE (opsional, hanya untuk YouTube)
+        YTDLP_PROXY (opsional, proxy residensial untuk YouTube)
         YTDLP_VERBOSE=1 (opsional)
 Output: build_clips/source/video.<ext> + info.json
 
@@ -11,6 +12,8 @@ Gate  : host didukung, bukan folder Drive, durasi <= MAX_SOURCE_MINUTES,
 YouTube : cookies + Deno + impersonate chrome + PO Token Provider.
           Strategi fallback multi-player-client (android, ios, tv_embedded,
           mweb) untuk melewati bot-check yang memblokir client web.
+          Proxy residensial (YTDLP_PROXY) sangat disarankan jika berjalan
+          di IP datacenter seperti GitHub Actions.
 Drive   : gdown (tidak butuh cookies / bot-check).
 """
 
@@ -42,8 +45,7 @@ DRIVE_FILE_PATTERNS = [
     re.compile(r"drive\.google\.com/open\?id=([a-zA-Z0-9_-]{10,})"),
 ]
 
-# Urutan client yang dicoba untuk YouTube. Client mobile/tv biasanya lebih
-# tahan terhadap bot-check datacenter IP dibanding client web.
+# Urutan client yang dicoba untuk YouTube.
 YOUTUBE_CLIENT_STRATEGIES = [
     ("android", "android"),
     ("ios", "ios"),
@@ -201,7 +203,7 @@ def _fetch_drive(source_url: str, out_dir: Path) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# YouTube (dengan PO Token Provider + multi-client fallback)
+# YouTube (dengan PO Token Provider + multi-client fallback + proxy opsional)
 # ---------------------------------------------------------------------------
 
 def _pot_provider_ready(timeout: float = 2.0) -> bool:
@@ -235,6 +237,22 @@ def _pot_args() -> list[str]:
     ]
 
 
+def _proxy_arg() -> list[str]:
+    """Ambil proxy dari env YTDLP_PROXY. Sangat disarankan di IP datacenter."""
+    proxy = os.getenv("YTDLP_PROXY", "").strip()
+    if not proxy:
+        return []
+    # Jangan log password proxy; cukup tampilkan host.
+    try:
+        from urllib.parse import urlparse as _up
+        parsed = _up(proxy)
+        host = parsed.hostname or "proxy"
+        common.info("using_proxy", host=host)
+    except Exception:  # noqa: BLE001
+        common.info("using_proxy", note="format tidak terparse")
+    return ["--proxy", proxy]
+
+
 def _verbose_arg() -> list[str]:
     return ["-v"] if os.getenv("YTDLP_VERBOSE", "").strip() == "1" else []
 
@@ -253,6 +271,7 @@ def _base_args() -> list[str]:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         "--socket-timeout", "30",
+        *_proxy_arg(),
         *_pot_args(),
     ]
 
@@ -357,7 +376,8 @@ def _download_youtube(url: str, out_dir: Path) -> Path:
         f"yt-dlp gagal setelah mencoba {len(YOUTUBE_CLIENT_STRATEGIES)} client. "
         f"Error terakhir: {last_hint}. "
         "Jika masalah berlanjut, IP runner kemungkinan diblokir permanen; "
-        "gunakan Google Drive sebagai sumber atau proxy residensial."
+        "gunakan Google Drive sebagai sumber atau proxy residensial "
+        "(set env YTDLP_PROXY)."
     )
     raise RuntimeError("unreachable")
 
@@ -374,8 +394,8 @@ def _fetch_youtube(source_url: str, out_dir: Path) -> dict:
         common.fail(
             f"Bot-check YouTube masih aktif meski PO Token berjalan. "
             f"Hint: {hint}. "
-            "Coba: (1) perbarui cookies, (2) gunakan Google Drive, "
-            "atau (3) jalankan di IP residensial."
+            "Coba: (1) perbarui cookies, (2) gunakan proxy residensial "
+            "via env YTDLP_PROXY, atau (3) gunakan Google Drive."
         )
 
     if meta.get("is_live"):
