@@ -10,6 +10,11 @@ Perbaikan kecepatan vs openai-whisper:
 - beam_size=3: sedikit lebih cepat dari default 5, kualitas hampir sama.
 - Model Systran/faster-whisper-small (~150 MB) vs openai 461 MB.
 
+Env opsional:
+- WHISPER_MODEL : "tiny" | "base" | "small" | "medium" (default: small).
+                  base ~2x lebih cepat dari small, akurasi turun sedikit.
+- WHISPER_BEAM  : beam size (default 3).
+
 Output tetap kompatibel: {"language", "duration", "words": [{start, end, text}]}.
 """
 
@@ -22,9 +27,12 @@ from . import common
 
 SRC_AUDIO = Path("build_clips/source/audio.wav")
 TRANSCRIPT = Path("build_clips/transcript.json")
-MODEL_SIZE = "small"
+
+# Model & parameter bisa diatur via env tanpa ubah kode.
+MODEL_SIZE = (common.get_env("WHISPER_MODEL", required=False, default="small")
+              or "small").strip()
 COMPUTE_TYPE = "int8"
-BEAM_SIZE = 3
+BEAM_SIZE = common.get_env_int("WHISPER_BEAM", 3)
 
 
 def _extract_audio(video_path: Path) -> Path:
@@ -57,6 +65,8 @@ def transcribe(video_path: str | Path) -> dict:
     video_path = Path(video_path)
     if not video_path.is_file():
         common.fail(f"video sumber tidak ada: {video_path}")
+
+    # Cache: kalau transcript sudah ada, pakai ulang.
     if TRANSCRIPT.is_file():
         cached = common.read_json(TRANSCRIPT)
         if cached and cached.get("words"):
@@ -67,7 +77,7 @@ def transcribe(video_path: str | Path) -> dict:
     model = _load_model()
 
     common.info("whisper_transcribe_start", audio=str(audio_path),
-                beam=BEAM_SIZE, vad=True)
+                model=MODEL_SIZE, beam=BEAM_SIZE, vad=True)
     segments, info_obj = model.transcribe(
         str(audio_path),
         language="id",
@@ -102,7 +112,7 @@ def transcribe(video_path: str | Path) -> dict:
     common.write_json(TRANSCRIPT, payload)
     common.info("whisper_ok", words=len(words),
                 duration=f"{payload['duration']:.1f}s",
-                engine="faster-whisper")
+                engine="faster-whisper", model=MODEL_SIZE)
     return payload
 
 
