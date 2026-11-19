@@ -1,0 +1,6 @@
+build_clips/
+output_clips/
+state/*.tmp
+state/*.json.tmp
+__pycache__/
+*.pyc
