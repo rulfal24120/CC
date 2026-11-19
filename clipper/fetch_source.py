@@ -3,12 +3,9 @@
 Input : SOURCE_URL (env), YTDLP_COOKIES_FILE (opsional)
 Output: build_clips/source/video.mp4 + info.json
 
-Strategi anti-bot-check:
-1. Cookies (YOUTUBE_COOKIES_B64)
-2. Deno sebagai JS runtime
-3. --impersonate chrome (curl-cffi)
-4. PO Token Provider (bgutil-ytdlp-pot-provider) di http://127.0.0.1:4416
-5. player_client=mweb (klien yang memakai PO token untuk GVS requests)
+PO Token Provider dikonfigurasi lewat dua extractor-args:
+- youtube: player_client=mweb, fetch_pot=always
+- youtubepot-bgutilhttp: base_url=http://127.0.0.1:4416
 """
 
 from __future__ import annotations
@@ -45,7 +42,6 @@ def _validate_url(url: str) -> None:
 
 
 def _pot_provider_ready(timeout: float = 2.0) -> bool:
-    """Cek apakah server POT provider bisa dijangkau."""
     try:
         with socket.create_connection((POT_HOST, POT_PORT), timeout=timeout):
             return True
@@ -66,16 +62,16 @@ def _cookies_arg() -> list[str]:
 
 
 def _pot_args() -> list[str]:
-    """Argumen untuk mengarahkan yt-dlp ke PO Token Provider lokal."""
+    """Konfigurasi PO Token Provider: youtube + plugin bgutilhttp."""
     if not _pot_provider_ready():
-        common.warn("pot_provider_unreachable",
-                    host=POT_HOST, port=POT_PORT,
-                    note="bot-check mungkin muncul")
+        common.warn("pot_provider_unreachable", host=POT_HOST, port=POT_PORT)
         return []
     common.info("using_pot_provider", url=f"http://{POT_HOST}:{POT_PORT}")
     return [
         "--extractor-args",
         "youtube:player_client=mweb;fetch_pot=always",
+        "--extractor-args",
+        f"youtubepot-bgutilhttp:base_url=http://{POT_HOST}:{POT_PORT}",
     ]
 
 
@@ -107,10 +103,10 @@ def _probe(url: str) -> dict:
     if proc.returncode != 0:
         if _is_bot_check(proc.stderr):
             common.fail(
-                "Bot-check tetap muncul meski PO Token Provider aktif. "
-                "Periksa log container bgutil-provider di step sebelumnya. "
-                "Jika provider crash, biasanya karena Node/Deno tidak terpasang "
-                "di dalam image — gunakan image resmi terbaru."
+                "Bot-check muncul meski PO Token Provider aktif. "
+                "Cek step 'Show provider logs' di workflow: container bgutil-provider "
+                "harus listen di 4416 tanpa crash. Jika log kosong, image "
+                "brainicism/bgutil-ytdlp-pot-provider mungkin versi lama."
             )
         common.fail(
             f"yt-dlp-meta gagal (exit {proc.returncode}): "
@@ -158,9 +154,9 @@ def _download(url: str, out_dir: Path) -> Path:
     if proc.returncode != 0:
         if _is_bot_check(proc.stderr):
             common.fail(
-                "Bot-check muncul saat download meski metadata berhasil. "
-                "Coba hapus cookies dan andalkan PO Token saja, atau "
-                "periksa kembali log container bgutil-provider."
+                "Bot-check muncul saat download. "
+                "Coba hapus cookies (andalkan PO token murni) atau "
+                "periksa log container bgutil-provider."
             )
         common.fail(
             f"yt-dlp download gagal (exit {proc.returncode}): "
