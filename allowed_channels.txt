@@ -1,0 +1,2 @@
+# Satu channel handle per baris, contoh: @NatGeoIndonesia
+# Kosong = semua channel diizinkan (v1 manual workflow_dispatch).
