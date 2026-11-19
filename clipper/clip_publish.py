@@ -1,5 +1,6 @@
 """Upload video + thumbnail ke Zernio (YouTube private + Facebook reel).
 
+Tidak dipakai di trial. Disiapkan untuk diaktifkan nanti.
 Input : satu entri pool (clip) + info
 Output: {"youtube_url": "...", "facebook_url": "..."}
 """
@@ -43,7 +44,8 @@ def _post(path: str, payload: dict, api_key: str) -> dict:
 def _put_file(url: str, path: Path, content_type: str) -> None:
     import requests  # noqa: PLC0415
     with path.open("rb") as f:
-        r = requests.put(url, data=f, headers={"Content-Type": content_type}, timeout=600)
+        r = requests.put(url, data=f,
+                         headers={"Content-Type": content_type}, timeout=600)
     r.raise_for_status()
 
 
@@ -52,7 +54,8 @@ def _poll_status(post_id: str, api_key: str) -> dict:
     for i in range(POLL_MAX):
         try:
             r = requests.get(f"{ZER_BASE}/v1/posts/{post_id}",
-                             headers={"Authorization": f"Bearer {api_key}"}, timeout=30)
+                             headers={"Authorization": f"Bearer {api_key}"},
+                             timeout=30)
             if r.status_code == 200:
                 data = r.json()
                 if data.get("status") in ("published", "failed", "partial"):
@@ -129,7 +132,8 @@ def publish(clip: dict, info: dict) -> dict[str, Any]:
                     note="FB kemungkinan selesai di sisi Zernio")
     common.info("publish_ok", clip_id=clip["clip_id"],
                 yt=bool(urls["youtube_url"]), fb=bool(urls["facebook_url"]))
-    return {**urls, "post_id": post_id, "status": final.get("status", "unknown")}
+    return {**urls, "post_id": post_id,
+            "status": final.get("status", "unknown")}
 
 
 def _main() -> None:
