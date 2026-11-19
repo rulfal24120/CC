@@ -7,6 +7,11 @@ on:
         description: "URL YouTube sumber"
         required: true
         type: string
+      verbose:
+        description: "Log verbose yt-dlp (1=aktif, untuk debug bot-check)"
+        required: false
+        default: "1"
+        type: string
 
 permissions:
   contents: write
@@ -90,11 +95,15 @@ jobs:
           curl -fsSL https://deno.land/install.sh | sh
           echo "$HOME/.deno/bin" >> "$GITHUB_PATH"
 
+      - name: Pull PO Token Provider image (latest)
+        run: |
+          docker pull brainicism/bgutil-ytdlp-pot-provider:latest
+
       - name: Start PO Token Provider (Docker sidecar)
         run: |
           docker run --name bgutil-provider -d --init \
             -p 127.0.0.1:4416:4416 \
-            brainicism/bgutil-ytdlp-pot-provider
+            brainicism/bgutil-ytdlp-pot-provider:latest
 
       - name: Wait for PO Token Provider
         run: |
@@ -139,6 +148,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           YTDLP_COOKIES_FILE: cookies.txt
+          YTDLP_VERBOSE: ${{ github.event.inputs.verbose }}
           GH_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           TARGET_CLIPS: "5"
           MIN_CLIP_SCORE: "7.0"
