@@ -1,8 +1,13 @@
-"""Orkestrasi produce: fetch → whisper → select → render paralel → thumbnail → pool.
+"""Orkestrasi produce: fetch → whisper → select → render paralel →
+thumbnail → pool → notify (ringkasan + video).
 
 Render dan thumbnail dijalankan paralel (ThreadPoolExecutor) untuk 3 clip
 sekaligus. Operasi file & state tetap sequential setelah render selesai,
 jadi aman dari race condition.
+
+Setelah ringkasan, tiap klip MP4 dikirim ke Telegram via sendVideo
+(kecuali SEND_CLIP_VIDEOS=0). Kegagalan kirim video bersifat best-effort
+dan tidak menggagalkan pipeline.
 """
 
 from __future__ import annotations
@@ -82,7 +87,18 @@ def main() -> None:
             "status": "scheduled",
             "date": common.today_iso(),
         })
+
+    # Ringkasan dulu (teks + thumbnail klip pertama).
     clip_notify.produce_summary(source_url, rendered)
+
+    # Kirim video per klip (best-effort, bisa dimatikan via SEND_CLIP_VIDEOS=0).
+    if common.get_env("SEND_CLIP_VIDEOS", required=False, default="1") != "0":
+        try:
+            clip_notify.send_clip_videos(rendered)
+        except Exception as exc:  # noqa: BLE001
+            common.warn("telegram_send_clips_failed",
+                        err=type(exc).__name__, detail=str(exc)[:200])
+
     print(json.dumps({"queued": len(rendered), "slots": slots}, indent=2))
 
 
